@@ -153,13 +153,27 @@ exports.exportAttendanceCSV = async (req, res) => {
       .sort({ date: -1, timestamp: 1 })
       .limit(5000);
 
-    // Group by session
-    const sessions = {};
+    // Group by session with orphan pairing
+    const sessMap = {};
     records.forEach(r => {
-      if (!sessions[r.sessionId]) sessions[r.sessionId] = { ci: null, co: null, user: r.userId };
-      if (r.type === 'check_in') sessions[r.sessionId].ci = r;
-      else sessions[r.sessionId].co = r;
+      if (!sessMap[r.sessionId]) sessMap[r.sessionId] = { ci: null, co: null, user: r.userId };
+      if (r.type === 'check_in') sessMap[r.sessionId].ci = r;
+      else sessMap[r.sessionId].co = r;
     });
+    const oCOs = Object.values(sessMap).filter(s => s.co && !s.ci);
+    const oCIs = Object.values(sessMap).filter(s => s.ci && !s.co);
+    oCOs.forEach(coS => {
+      const co = coS.co;
+      const coUser = co.userId?._id?.toString() || co.employeeId;
+      const match = oCIs.find(ciS => {
+        const ci = ciS.ci;
+        return ci.date === co.date &&
+               (ci.userId?._id?.toString() || ci.employeeId) === coUser &&
+               ci.timestamp <= co.timestamp;
+      });
+      if (match) { match.co = co; delete sessMap[co.sessionId]; oCIs.splice(oCIs.indexOf(match), 1); }
+    });
+    const sessions = Object.values(sessMap);
 
     let csv = 'Carpenter ID,Carpenter Name,Date,Check-In Time,Check-In Address,Check-Out Time,Check-Out Address\n';
     Object.values(sessions).forEach(({ ci, co, user }) => {
@@ -194,12 +208,32 @@ exports.exportAttendancePDF = async (req, res) => {
       .sort({ date: -1, timestamp: 1 })
       .limit(1000);
 
-    const sessions = {};
+    // Step 1: pair by sessionId
+    const sessionsMap = {};
     records.forEach(r => {
-      if (!sessions[r.sessionId]) sessions[r.sessionId] = { ci: null, co: null, user: r.userId };
-      if (r.type === 'check_in') sessions[r.sessionId].ci = r;
-      else sessions[r.sessionId].co = r;
+      if (!sessionsMap[r.sessionId]) sessionsMap[r.sessionId] = { ci: null, co: null, user: r.userId };
+      if (r.type === 'check_in') sessionsMap[r.sessionId].ci = r;
+      else sessionsMap[r.sessionId].co = r;
     });
+
+    // Step 2: pair orphaned check-outs with orphaned check-ins (same user, same date)
+    const orphanedCOs = Object.values(sessionsMap).filter(s => s.co && !s.ci);
+    const orphanedCIs = Object.values(sessionsMap).filter(s => s.ci && !s.co);
+    orphanedCOs.forEach(coS => {
+      const co = coS.co;
+      const coUser = co.userId?._id?.toString() || co.employeeId;
+      const match = orphanedCIs.find(ciS => {
+        const ci = ciS.ci;
+        const ciUser = ci.userId?._id?.toString() || ci.employeeId;
+        return ci.date === co.date && ciUser === coUser && ci.timestamp <= co.timestamp;
+      });
+      if (match) {
+        match.co = co;
+        delete sessionsMap[co.sessionId];
+        orphanedCIs.splice(orphanedCIs.indexOf(match), 1);
+      }
+    });
+    const sessions = Object.values(sessionsMap);
 
     const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape', bufferPages: true });
     const fname = `saifi_attendance_${Date.now()}.pdf`;
@@ -216,7 +250,7 @@ exports.exportAttendancePDF = async (req, res) => {
     doc.moveDown(0.3);
 
     // ── Summary line ─────────────────────────────────────────────
-    const rows = Object.values(sessions);
+    const rows = sessions;  // already an array
     const completed = rows.filter(s => s.ci && s.co).length;
     const onsite    = rows.filter(s => s.ci && !s.co).length;
     doc.fontSize(9).fillColor('#888')
