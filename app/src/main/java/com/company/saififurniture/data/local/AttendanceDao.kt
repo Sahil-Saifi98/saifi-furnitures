@@ -23,6 +23,9 @@ interface AttendanceDao {
     @Query("UPDATE attendance SET isSynced = 1, address = :address WHERE id = :id")
     suspend fun markSyncedWithAddress(id: Long, address: String)
 
+    @Query("UPDATE attendance SET isSynced = 1, address = :address, selfieUrl = :selfieUrl WHERE id = :id")
+    suspend fun markSyncedWithDetails(id: Long, address: String, selfieUrl: String)
+
     // Today only
     @Query("""
         SELECT * FROM attendance

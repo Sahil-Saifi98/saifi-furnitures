@@ -21,11 +21,19 @@ exports.getAllUsers = async (req, res) => {
 exports.addUser = async (req, res) => {
   try {
     const { employeeId, name, email, password, role } = req.body;
-    const exists = await User.findOne({ $or: [{ employeeId }, { email }] });
+
+    if (!employeeId || !name || !password)
+      return res.status(400).json({ success: false, message: 'Employee ID, name and password are required' });
+
+    const orConditions = [{ employeeId }];
+    if (email && email.trim() !== '') orConditions.push({ email: email.toLowerCase().trim() });
+    const exists = await User.findOne({ $or: orConditions });
     if (exists)
       return res.status(400).json({ success: false, message: 'Employee ID or email already exists' });
 
-    const user = await User.create({ employeeId, name, email, password, role: role || 'carpenter' });
+    const userData = { employeeId, name, password, role: role || 'carpenter' };
+    if (email && email.trim() !== '') userData.email = email.toLowerCase().trim();
+    const user = await User.create(userData);
     res.status(201).json({
       success: true,
       message: `${name} added successfully`,

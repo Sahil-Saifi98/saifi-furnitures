@@ -19,7 +19,8 @@ data class AttendanceEntity(
     val employeeId: String = "",
     val type: String = "check_in",   // "check_in" or "check_out"
     val sessionId: String = "",      // pairs check-in with its check-out
-    val selfiePath: String = "",
+    val selfiePath: String = "",     // local file path (before sync)
+    val selfieUrl: String = "",      // Cloudinary URL (after sync)
     val latitude: Double = 0.0,
     val longitude: Double = 0.0,
     val address: String = "",

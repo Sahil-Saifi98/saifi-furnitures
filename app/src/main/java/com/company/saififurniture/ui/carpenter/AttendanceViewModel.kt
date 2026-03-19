@@ -151,9 +151,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 }
 
                 if (response.isSuccessful && response.body()?.success == true) {
-                    val addr = response.body()!!.data?.address
+                    val addr = response.body()!!.data?.address ?: entity.address
+                    val url  = response.body()!!.data?.selfieUrl ?: ""
                     repository.update(
-                        entity.copy(id = localId, address = addr ?: entity.address, isSynced = true)
+                        entity.copy(id = localId, address = addr, selfieUrl = url, isSynced = true)
                     )
                     _status.value = if (type == "check_in")
                         "✅ Checked in successfully!"

@@ -76,9 +76,13 @@ class AttendanceRepository(
                 }
 
                 if (response.isSuccessful && response.body()?.success == true) {
-                    val addr = response.body()!!.data?.address
-                    if (!addr.isNullOrBlank()) dao.markSyncedWithAddress(record.id, addr)
-                    else dao.markAsSynced(record.id)
+                    val addr = response.body()!!.data?.address ?: ""
+                    val url  = response.body()!!.data?.selfieUrl ?: ""
+                    dao.markSyncedWithDetails(
+                        record.id,
+                        addr.ifBlank { record.address },
+                        url
+                    )
                     success++
                 } else {
                     if (response.code() != 401) failed++
@@ -91,10 +95,10 @@ class AttendanceRepository(
         }
 
         return SyncResult(
-            total       = pending.size,
-            success     = success,
-            failed      = failed,
-            missingFiles= missing
+            total        = pending.size,
+            success      = success,
+            failed       = failed,
+            missingFiles = missing
         )
     }
 }

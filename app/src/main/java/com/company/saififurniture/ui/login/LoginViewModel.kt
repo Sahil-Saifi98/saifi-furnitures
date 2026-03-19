@@ -3,28 +3,12 @@ package com.saififurnitures.app.ui.login
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.saififurnitures.app.data.remote.LoginRequest
+import com.saififurnitures.app.data.remote.RetrofitClient
 import com.saififurnitures.app.data.session.SessionManager
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-
-// ── Hardcoded test users (remove when backend is ready) ───────────
-private data class TestUser(
-    val employeeId: String,
-    val password: String,
-    val name: String,
-    val email: String,
-    val role: String
-)
-
-private val TEST_USERS = listOf(
-    TestUser("ADMIN-001",  "admin123",  "Admin Saifi",    "admin@saifi.com",     "admin"),
-    TestUser("SAIFI-001",  "saifi001",  "Raza Carpenter", "raza@saifi.com",      "carpenter"),
-    TestUser("SAIFI-002",  "saifi002",  "Ali Carpenter",  "ali@saifi.com",       "carpenter"),
-    TestUser("SAIFI-003",  "saifi003",  "Usman Carpenter","usman@saifi.com",     "carpenter")
-)
-// ─────────────────────────────────────────────────────────────────
 
 class LoginViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -55,33 +39,44 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isLoading.value    = true
             _errorMessage.value = null
-
-            // Simulate small network delay
-            delay(600)
-
-            val id   = _employeeId.value.trim()
-            val pass = _password.value
-
-            val match = TEST_USERS.find {
-                it.employeeId.equals(id, ignoreCase = true) && it.password == pass
-            }
-
-            if (match != null) {
-                sessionManager.saveLoginSession(
-                    token      = "test_token_${match.employeeId}",
-                    userId     = match.employeeId,
-                    employeeId = match.employeeId,
-                    name       = match.name,
-                    email      = match.email,
-                    role       = match.role
+            try {
+                val response = RetrofitClient.authApi.login(
+                    LoginRequest(
+                        employeeId = _employeeId.value.trim(),
+                        password   = _password.value
+                    )
                 )
-                _isAdmin.value      = match.role == "admin"
-                _loginSuccess.value = true
-            } else {
-                _errorMessage.value = "Invalid ID or Password"
+                if (response.isSuccessful && response.body() != null) {
+                    val body = response.body()!!
+                    if (body.success && body.user != null && body.token != null) {
+                        sessionManager.saveLoginSession(
+                            token      = body.token,
+                            userId     = body.user.id,
+                            employeeId = body.user.employeeId,
+                            name       = body.user.name,
+                            email      = body.user.email,
+                            role       = body.user.role
+                        )
+                        _isAdmin.value      = body.user.role == "admin"
+                        _loginSuccess.value = true
+                    } else {
+                        _errorMessage.value = body.message ?: "Login failed"
+                    }
+                } else {
+                    _errorMessage.value = "Invalid ID or Password"
+                }
+            } catch (e: Exception) {
+                _errorMessage.value = when {
+                    e.message?.contains("Unable to resolve host") == true ->
+                        "No internet connection. Please try again."
+                    e.message?.contains("timeout") == true ->
+                        "Connection timed out. Please try again."
+                    else ->
+                        "Error: ${e.message ?: "Something went wrong"}"
+                }
+            } finally {
+                _isLoading.value = false
             }
-
-            _isLoading.value = false
         }
     }
 }

@@ -9,8 +9,8 @@ import java.util.concurrent.TimeUnit
 
 object RetrofitClient {
 
-    // ← Replace with your SaifiFurnitures backend URL
-    private const val BASE_URL = "https://YOUR_SAIFI_BACKEND.onrender.com/api/"
+    // ← Your Render backend URL
+    private const val BASE_URL = "https://saifi-furnitures.onrender.com/api/"
 
     @Volatile private var authToken: String? = null
 
