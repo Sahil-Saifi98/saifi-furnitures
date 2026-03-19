@@ -91,7 +91,7 @@ fun LoginScreen(
             Spacer(Modifier.height(24.dp))
 
             Text(
-                text = "Saifi Furnitures",
+                text = "Rajuddin Furnitures",
                 style = MaterialTheme.typography.headlineLarge,
                 fontWeight = FontWeight.Bold,
                 color = Color.White,
@@ -306,7 +306,7 @@ fun LoginScreen(
             Spacer(Modifier.height(16.dp))
 
             Text(
-                text = "Saifi Furnitures v1.0",
+                text = "Rajuddin Furnitures v1.0",
                 style = MaterialTheme.typography.bodySmall,
                 color = WoodWarm.copy(alpha = 0.5f),
                 textAlign = TextAlign.Center

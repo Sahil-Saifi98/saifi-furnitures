@@ -406,7 +406,7 @@ fun AdminUsersScreen(
                                 user          = user,
                                 onViewClick   = {
                                     navController.navigate(
-                                        NavRoutes.AdminCarpenterDetail.createRoute(user._id, user.name)
+                                        NavRoutes.AdminCarpenterDetail.createRoute(user.employeeId, user.name)
                                     )
                                 },
                                 onDeleteClick = { userToDelete = user }

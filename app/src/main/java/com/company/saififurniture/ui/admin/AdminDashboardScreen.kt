@@ -66,7 +66,7 @@ fun AdminDashboardScreen(navController: NavHostController) {
                                 color = WoodWarm.copy(alpha = 0.8f)
                             )
                             Text(
-                                "Saifi Furnitures",
+                                "Rajuddin Furnitures",
                                 style      = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.Bold,
                                 color      = Color.White
@@ -242,7 +242,7 @@ fun AdminDashboardScreen(navController: NavHostController) {
                     Spacer(Modifier.width(14.dp))
                     Column {
                         Text(
-                            "Saifi Furnitures",
+                            "Rajuddin Furnitures",
                             style      = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                             color      = TextDark

@@ -5,6 +5,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import com.saififurnitures.app.data.session.SessionManager
 import com.saififurnitures.app.ui.admin.AdminAttendanceScreen
 import com.saififurnitures.app.ui.admin.AdminDashboardScreen
@@ -61,15 +63,21 @@ fun AppNavGraph() {
             ProfileScreen(navController = navController)
         }
 
-                composable(NavRoutes.History.route) {
-                    HistoryScreen(navController = navController)
-                }
+        composable(NavRoutes.History.route) {
+            HistoryScreen(navController = navController)
+        }
 
 
-                composable(NavRoutes.AdminUsers.route) {
-                    AdminUsersScreen(navController = navController)
-                }
-        composable(NavRoutes.AdminCarpenterDetail.route) {
+        composable(NavRoutes.AdminUsers.route) {
+            AdminUsersScreen(navController = navController)
+        }
+        composable(
+            route = NavRoutes.AdminCarpenterDetail.route,
+            arguments = listOf(
+                navArgument("employeeId")    { type = NavType.StringType },
+                navArgument("carpenterName") { type = NavType.StringType }
+            )
+        ) {
             AdminCarpenterDetailScreen(navController = navController)
         }
     }

@@ -301,7 +301,7 @@ fun ProfileScreen(
             Spacer(Modifier.height(12.dp))
 
             Text(
-                text      = "Saifi Furnitures v1.0",
+                text      = "Rajuddin Furnitures v1.0",
                 modifier  = Modifier.fillMaxWidth(),
                 style     = MaterialTheme.typography.bodySmall,
                 color     = TextLight,
