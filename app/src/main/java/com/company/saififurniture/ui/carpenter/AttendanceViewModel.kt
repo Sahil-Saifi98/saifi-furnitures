@@ -103,10 +103,24 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             val userId     = sessionManager.getUserId()     ?: ""
             val employeeId = sessionManager.getEmployeeId() ?: ""
             val type       = if (isCapturingCheckIn) "check_in" else "check_out"
-            val sessionId  = if (isCapturingCheckIn)
+            // For check-out, we MUST use the existing check-in's sessionId
+            // Try local first, then fetch from backend if app was restarted
+            val sessionId  = if (isCapturingCheckIn) {
                 repository.newSessionId()
-            else
-                _openSession.value?.sessionId ?: repository.newSessionId()
+            } else {
+                val localSession = _openSession.value?.sessionId
+                if (localSession != null) {
+                    localSession
+                } else {
+                    // Fallback: fetch active session from backend
+                    try {
+                        val activeResp = RetrofitClient.attendanceApi.getActiveSession()
+                        activeResp.body()?.data?.sessionId ?: repository.newSessionId()
+                    } catch (e: Exception) {
+                        repository.newSessionId()
+                    }
+                }
+            }
 
             // Save locally first — never lose attendance
             val entity = AttendanceEntity(

@@ -386,7 +386,7 @@ fun AdminSessionCard(
             // Check-in row
             AttendanceEventRow(
                 label         = "Check In",
-                time          = session.checkInTime,
+                time          = session.checkInTime ?: "—",
                 address       = session.checkInAddress,
                 selfieUrl     = session.checkInSelfieUrl,
                 dotColor      = AccentGreen,

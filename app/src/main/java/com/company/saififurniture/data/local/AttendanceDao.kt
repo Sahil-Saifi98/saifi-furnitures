@@ -26,7 +26,6 @@ interface AttendanceDao {
     @Query("UPDATE attendance SET isSynced = 1, address = :address, selfieUrl = :selfieUrl WHERE id = :id")
     suspend fun markSyncedWithDetails(id: Long, address: String, selfieUrl: String)
 
-    // Today only
     @Query("""
         SELECT * FROM attendance
         WHERE userId = :userId
@@ -35,7 +34,6 @@ interface AttendanceDao {
     """)
     suspend fun getTodayAttendance(userId: String): List<AttendanceEntity>
 
-    // Date range — startDate and endDate in format 'yyyy-MM-dd'
     @Query("""
         SELECT * FROM attendance
         WHERE userId = :userId
@@ -44,7 +42,6 @@ interface AttendanceDao {
     """)
     suspend fun getAttendanceByRange(userId: String, startDate: String, endDate: String): List<AttendanceEntity>
 
-    // Open session — check-in with no matching check-out today
     @Query("""
         SELECT * FROM attendance
         WHERE userId = :userId

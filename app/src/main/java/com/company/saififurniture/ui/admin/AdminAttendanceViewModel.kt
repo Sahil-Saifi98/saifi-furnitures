@@ -16,7 +16,7 @@ data class AdminSessionRow(
     val employeeName: String,
     val employeeId: String,
     val date: String,
-    val checkInTime: String,
+    val checkInTime: String?,   // null if only check-out exists
     val checkOutTime: String?,
     val checkInAddress: String,
     val checkOutAddress: String?,
@@ -69,7 +69,7 @@ class AdminAttendanceViewModel(application: Application) : AndroidViewModel(appl
                                 employeeName     = item.userId.name,
                                 employeeId       = item.userId.employeeId,
                                 date             = item.date,
-                                checkInTime      = convertUtcToIst(item.checkInTime),
+                                checkInTime      = item.checkInTime?.let { convertUtcToIst(it) },
                                 checkOutTime     = item.checkOutTime?.let { convertUtcToIst(it) },
                                 checkInAddress   = item.checkInAddress,
                                 checkOutAddress  = item.checkOutAddress,

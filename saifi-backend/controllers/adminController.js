@@ -69,12 +69,44 @@ exports.getAllAttendance = async (req, res) => {
       .sort({ timestamp: 1 });
 
     // Pair check-ins with check-outs by sessionId
+    // Step 1: pair by exact sessionId match
     const sessionsMap = {};
     records.forEach(r => {
       const sid = r.sessionId;
       if (!sessionsMap[sid]) sessionsMap[sid] = { checkIn: null, checkOut: null, userId: r.userId };
       if (r.type === 'check_in') sessionsMap[sid].checkIn = r;
       else sessionsMap[sid].checkOut = r;
+    });
+
+    // Step 2: for orphaned check-outs (no matching check-in by sessionId),
+    // try to pair with orphaned check-ins from the same user on the same date
+    const orphanedCheckOuts = Object.values(sessionsMap)
+      .filter(s => s.checkOut !== null && s.checkIn === null);
+    const orphanedCheckIns  = Object.values(sessionsMap)
+      .filter(s => s.checkIn !== null && s.checkOut === null);
+
+    orphanedCheckOuts.forEach(coSession => {
+      const co = coSession.checkOut;
+      const coDate = co.date;
+      const coUser = co.userId?._id?.toString() || co.employeeId;
+
+      // Find best matching orphaned check-in: same user, same date, timestamp before checkout
+      const match = orphanedCheckIns.find(ciSession => {
+        const ci = ciSession.checkIn;
+        const ciUser = ci.userId?._id?.toString() || ci.employeeId;
+        return ci.date === coDate &&
+               ciUser === coUser &&
+               ci.timestamp <= co.timestamp;
+      });
+
+      if (match) {
+        // Merge: put check-out into the check-in's session, remove the orphaned check-out entry
+        match.checkOut = co;
+        delete sessionsMap[co.sessionId];
+        // Remove from orphanedCheckIns so it can't be matched again
+        const idx = orphanedCheckIns.indexOf(match);
+        if (idx > -1) orphanedCheckIns.splice(idx, 1);
+      }
     });
 
     const sessions = Object.entries(sessionsMap).map(([sid, s]) => {
