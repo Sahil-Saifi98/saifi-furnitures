@@ -207,47 +207,133 @@ exports.exportAttendancePDF = async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
     doc.pipe(res);
 
-    doc.fontSize(18).font('Helvetica-Bold').text('Saifi Furnitures — Attendance Report', { align: 'center' });
-    doc.moveDown(0.5);
-    doc.fontSize(11).font('Helvetica').text(`Period: ${startDate || 'All'} to ${endDate || 'All'}`, { align: 'center' });
-    doc.fontSize(10).text(`Generated: ${moment().tz(IST).format('DD/MM/YYYY HH:mm')} IST`, { align: 'center' });
-    doc.moveDown(1.5);
+    // ── Title ────────────────────────────────────────────────────
+    doc.fontSize(18).font('Helvetica-Bold').fillColor('#3B1F0A')
+       .text('Saifi Furnitures — Attendance Report', { align: 'center' });
+    doc.moveDown(0.3);
+    doc.fontSize(10).font('Helvetica').fillColor('#6B3A1F')
+       .text(`Period: ${startDate || 'All dates'} to ${endDate || 'All dates'}   |   Generated: ${moment().tz(IST).format('DD/MM/YYYY HH:mm')} IST`, { align: 'center' });
+    doc.moveDown(0.3);
 
+    // ── Summary line ─────────────────────────────────────────────
     const rows = Object.values(sessions);
-    const ROW_H = 32;
+    const completed = rows.filter(s => s.ci && s.co).length;
+    const onsite    = rows.filter(s => s.ci && !s.co).length;
+    doc.fontSize(9).fillColor('#888')
+       .text(`Total: ${rows.length} sessions  |  Completed: ${completed}  |  On Site: ${onsite}`, { align: 'center' });
+    doc.moveDown(0.8);
+
+    // ── Column layout (landscape A4 = 841 x 595, margin 30 each side = 781px wide) ──
+    // Columns: Carpenter(100) | ID(65) | Date(65) | Check-In Time(60) | Check-In Location(160) | Check-Out Time(60) | Check-Out Location(160) | Status(55)
+    const COL = { x: 30, w: 781 };
+    const C = {
+      name:    { x: 30,  w: 100 },
+      empId:   { x: 133, w: 62  },
+      date:    { x: 198, w: 62  },
+      ciTime:  { x: 263, w: 60  },
+      ciLoc:   { x: 326, w: 158 },
+      coTime:  { x: 487, w: 60  },
+      coLoc:   { x: 550, w: 158 },
+      status:  { x: 711, w: 60  },
+    };
+    const HDR_H = 22;
+    const ROW_H = 36;
     let y = doc.y;
 
     const drawHeader = () => {
-      doc.font('Helvetica-Bold').fontSize(8);
-      doc.rect(30, y, 750, 20).fill('#6B3A1F');
-      doc.fillColor('white');
-      doc.text('Carpenter',    35,  y + 6, { width: 90 });
-      doc.text('ID',          130,  y + 6, { width: 65 });
-      doc.text('Date',        200,  y + 6, { width: 65 });
-      doc.text('Check In',    270,  y + 6, { width: 65 });
-      doc.text('In Location', 340,  y + 6, { width: 170 });
-      doc.text('Check Out',   515,  y + 6, { width: 65 });
-      doc.text('Out Location',585,  y + 6, { width: 190 });
+      // Header background
+      doc.rect(COL.x, y, COL.w, HDR_H).fill('#3B1F0A');
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor('white');
+      doc.text('Carpenter',       C.name.x + 2,  y + 7, { width: C.name.w });
+      doc.text('Emp ID',          C.empId.x + 2, y + 7, { width: C.empId.w });
+      doc.text('Date',            C.date.x + 2,  y + 7, { width: C.date.w });
+      doc.text('Check-In',        C.ciTime.x + 2,y + 7, { width: C.ciTime.w });
+      doc.text('Check-In Location', C.ciLoc.x + 2, y + 7, { width: C.ciLoc.w });
+      doc.text('Check-Out',       C.coTime.x + 2,y + 7, { width: C.coTime.w });
+      doc.text('Check-Out Location', C.coLoc.x + 2, y + 7, { width: C.coLoc.w });
+      doc.text('Status',          C.status.x + 2,y + 7, { width: C.status.w });
       doc.fillColor('black');
-      y += 22;
+      y += HDR_H + 1;
     };
 
     drawHeader();
 
     rows.forEach((s, idx) => {
-      if (y > 520) { doc.addPage(); y = 40; drawHeader(); }
+      // Check if we need a new page (leave room for at least one row)
+      if (y + ROW_H > 560) { doc.addPage(); y = 30; drawHeader(); }
+
       const bg = idx % 2 === 0 ? '#FFF9F2' : '#FFFFFF';
-      doc.rect(30, y, 750, ROW_H - 2).fill(bg);
-      doc.font('Helvetica').fontSize(7).fillColor('#1C0F05');
-      doc.text(s.user?.name || 'Unknown',      35,  y + 4, { width: 90 });
-      doc.text(s.ci?.employeeId || s.co?.employeeId || '', 130, y + 4, { width: 65 });
-      doc.text(s.ci?.date || s.co?.date || '',  200, y + 4, { width: 65 });
-      doc.text(s.ci ? toIST(s.ci.timestamp) : '-', 270, y + 4, { width: 65 });
-      doc.text(s.ci?.address || '-',            340, y + 4, { width: 170, height: ROW_H - 6, ellipsis: true });
-      doc.text(s.co ? toIST(s.co.timestamp) : '-', 515, y + 4, { width: 65 });
-      doc.text(s.co?.address || '-',            585, y + 4, { width: 190, height: ROW_H - 6, ellipsis: true });
+      const isCompleted = s.ci && s.co;
+      const statusColor = isCompleted ? '#2E7D32' : '#B8860B';
+      const statusText  = isCompleted ? 'Completed' : (s.ci ? 'On Site' : 'Out Only');
+
+      // Row background
+      doc.rect(COL.x, y, COL.w, ROW_H - 1).fill(bg);
+
+      // Thin left accent bar
+      doc.rect(COL.x, y, 3, ROW_H - 1).fill(isCompleted ? '#4A7C59' : '#D4A853');
+
+      doc.font('Helvetica').fontSize(7.5).fillColor('#1C0F05');
+
+      const ty = y + 4; // text top with padding
+
+      // Carpenter name (bold)
+      doc.font('Helvetica-Bold').fontSize(7.5)
+         .text(s.user?.name || 'Unknown', C.name.x + 5, ty, { width: C.name.w - 4, ellipsis: true });
+
+      doc.font('Helvetica').fontSize(7).fillColor('#555')
+         .text(s.ci?.employeeId || s.co?.employeeId || '', C.name.x + 5, ty + 11, { width: C.name.w - 4 });
+
+      doc.font('Helvetica').fontSize(7.5).fillColor('#1C0F05');
+
+      // Emp ID
+      doc.text(s.ci?.employeeId || s.co?.employeeId || '-', C.empId.x + 2, ty, { width: C.empId.w - 2 });
+
+      // Date
+      doc.text(s.ci?.date || s.co?.date || '-', C.date.x + 2, ty, { width: C.date.w - 2 });
+
+      // Check-In time (green)
+      doc.fillColor(s.ci ? '#2E7D32' : '#aaa')
+         .text(s.ci ? toIST(s.ci.timestamp) : '—', C.ciTime.x + 2, ty, { width: C.ciTime.w - 2 });
+
+      // Check-In location
+      doc.fillColor('#333')
+         .text(s.ci?.address || '—', C.ciLoc.x + 2, ty, {
+           width: C.ciLoc.w - 4,
+           height: ROW_H - 8,
+           ellipsis: true,
+           lineBreak: true
+         });
+
+      // Check-Out time (red)
+      doc.fillColor(s.co ? '#B94040' : '#aaa')
+         .text(s.co ? toIST(s.co.timestamp) : '—', C.coTime.x + 2, ty, { width: C.coTime.w - 2 });
+
+      // Check-Out location
+      doc.fillColor('#333')
+         .text(s.co?.address || '—', C.coLoc.x + 2, ty, {
+           width: C.coLoc.w - 4,
+           height: ROW_H - 8,
+           ellipsis: true,
+           lineBreak: true
+         });
+
+      // Status badge
+      doc.roundedRect(C.status.x + 2, ty - 1, C.status.w - 4, 14, 3).fill(isCompleted ? '#E8F5E9' : '#FFF8E1');
+      doc.fillColor(statusColor).font('Helvetica-Bold').fontSize(6.5)
+         .text(statusText, C.status.x + 4, ty + 2, { width: C.status.w - 6, align: 'center' });
+
+      // Row bottom border
+      doc.moveTo(COL.x, y + ROW_H - 1).lineTo(COL.x + COL.w, y + ROW_H - 1)
+         .strokeColor('#E8DDD0').lineWidth(0.5).stroke();
+
       y += ROW_H;
     });
+
+    // Footer
+    doc.moveDown(1);
+    doc.font('Helvetica').fontSize(8).fillColor('#aaa')
+       .text(`Saifi Furnitures Attendance System — Confidential`, { align: 'center' });
 
     doc.end();
   } catch (err) {

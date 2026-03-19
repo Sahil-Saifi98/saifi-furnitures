@@ -119,7 +119,8 @@ class AdminExportViewModel(application: Application) : AndroidViewModel(applicat
             try {
                 val response = RetrofitClient.adminApi.exportAttendanceCSV(
                     startDate  = _startDate.value,
-                    endDate    = _endDate.value
+                    endDate    = _endDate.value,
+                    employeeId = user.employeeId
                 )
                 if (response.isSuccessful && response.body() != null) {
                     val fileName = "attendance_${user.name.replace(" ", "_")}_${timestamp()}.csv"
@@ -147,7 +148,8 @@ class AdminExportViewModel(application: Application) : AndroidViewModel(applicat
             try {
                 val response = RetrofitClient.adminApi.exportAttendancePDF(
                     startDate  = _startDate.value,
-                    endDate    = _endDate.value
+                    endDate    = _endDate.value,
+                    employeeId = user.employeeId
                 )
                 if (response.isSuccessful && response.body() != null) {
                     val fileName = "attendance_${user.name.replace(" ", "_")}_${timestamp()}.pdf"

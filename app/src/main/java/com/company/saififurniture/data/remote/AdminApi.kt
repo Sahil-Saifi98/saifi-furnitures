@@ -25,7 +25,7 @@ data class AdminAttendanceItem(
     val userId: AdminUserInfo,
     val employeeId: String,
     val sessionId: String,
-    val checkInTime: String,
+    val checkInTime: String?,   // null if session only has check-out
     val checkOutTime: String?,
     val checkInSelfieUrl: String?,
     val checkOutSelfieUrl: String?,
@@ -107,13 +107,15 @@ interface AdminApi {
     @GET("admin/export/attendance/csv")
     suspend fun exportAttendanceCSV(
         @Query("startDate")  startDate:  String? = null,
-        @Query("endDate")    endDate:    String? = null
+        @Query("endDate")    endDate:    String? = null,
+        @Query("employeeId") employeeId: String? = null
     ): Response<ResponseBody>
 
     @Streaming
     @GET("admin/export/attendance/pdf")
     suspend fun exportAttendancePDF(
-        @Query("startDate") startDate: String? = null,
-        @Query("endDate")   endDate:   String? = null
+        @Query("startDate")  startDate:  String? = null,
+        @Query("endDate")    endDate:    String? = null,
+        @Query("employeeId") employeeId: String? = null
     ): Response<ResponseBody>
 }

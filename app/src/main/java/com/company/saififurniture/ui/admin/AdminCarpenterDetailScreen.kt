@@ -80,7 +80,7 @@ class AdminCarpenterDetailViewModel(
                 )
                 if (response.isSuccessful && response.body()?.success == true) {
                     _sessions.value = response.body()!!.data
-                        .sortedByDescending { it.date + it.checkInTime }
+                        .sortedByDescending { it.date + (it.checkInTime ?: "") }
                 } else {
                     _error.value = "Failed to load: ${response.code()}"
                 }
@@ -345,7 +345,7 @@ private fun DetailSessionCard(
     onSelfieClick: (String) -> Unit
 ) {
     val isOpen      = session.checkOutTime == null
-    val checkInTime = formatTime(session.checkInTime)
+    val checkInTime = session.checkInTime?.let { formatTime(it) } ?: "—"
     val checkOutTime = session.checkOutTime?.let { formatTime(it) } ?: "—"
 
     Card(
