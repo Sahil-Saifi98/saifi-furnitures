@@ -76,6 +76,7 @@ class AttendanceRepository(
                 }
 
                 if (response.isSuccessful && response.body()?.success == true) {
+                    // Both 200 (already exists) and 201 (newly created) are success
                     val addr = response.body()!!.data?.address ?: ""
                     val url  = response.body()!!.data?.selfieUrl ?: ""
                     dao.markSyncedWithDetails(
@@ -84,6 +85,11 @@ class AttendanceRepository(
                         url
                     )
                     success++
+                } else if (response.code() == 409) {
+                    // Conflict = already exists on server — mark as synced
+                    dao.markAsSynced(record.id)
+                    success++
+                    Log.i("Repository", "Record already on server id=${record.id} — marked synced")
                 } else {
                     if (response.code() != 401) failed++
                     Log.w("Repository", "Sync fail id=${record.id} code=${response.code()}")

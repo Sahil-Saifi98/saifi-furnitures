@@ -47,6 +47,12 @@ exports.checkIn = async (req, res) => {
     // Use provided sessionId from app, or generate one
     const sid  = sessionId || require('crypto').randomUUID();
 
+    // Idempotency check — if same sessionId + type already exists, return it (don't duplicate)
+    const existing = await Attendance.findOne({ sessionId: sid, type: 'check_in', userId: req.user._id });
+    if (existing) {
+      return res.status(200).json({ success: true, message: 'Already checked in', data: existing });
+    }
+
     const record = await Attendance.create({
       userId:     req.user._id,
       employeeId: req.user.employeeId,
@@ -87,6 +93,12 @@ exports.checkOut = async (req, res) => {
     const ts   = new Date(parseInt(timestamp));
     const date = moment(ts).tz(IST).format('YYYY-MM-DD');
     const time = moment(ts).tz(IST).format('HH:mm:ss');
+
+    // Idempotency check — if same sessionId + type already exists, return it (don't duplicate)
+    const existingOut = await Attendance.findOne({ sessionId, type: 'check_out', userId: req.user._id });
+    if (existingOut) {
+      return res.status(200).json({ success: true, message: 'Already checked out', data: existingOut });
+    }
 
     const record = await Attendance.create({
       userId:     req.user._id,

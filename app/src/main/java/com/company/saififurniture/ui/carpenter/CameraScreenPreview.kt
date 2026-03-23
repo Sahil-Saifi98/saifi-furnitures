@@ -32,6 +32,7 @@ fun CameraPreviewScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     var imageCapture: ImageCapture? by remember { mutableStateOf(null) }
+    var hasCapured by remember { mutableStateOf(false) }  // prevent double capture
     val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
 
     DisposableEffect(Unit) {
@@ -101,7 +102,10 @@ fun CameraPreviewScreen(
                     .height(56.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = actionColor),
+                enabled = !hasCapured,
                 onClick = {
+                    if (hasCapured) return@Button
+                    hasCapured = true
                     val photoFile = File(
                         context.cacheDir,
                         "selfie_${System.currentTimeMillis()}.jpg"
@@ -117,6 +121,7 @@ fun CameraPreviewScreen(
                                 onImageCaptured(photoFile)
                             }
                             override fun onError(exception: ImageCaptureException) {
+                                hasCapured = false  // allow retry on error
                                 onError(exception.message ?: "Capture failed")
                             }
                         }

@@ -87,7 +87,15 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             AttendanceState.READY_TO_CHECK_IN
     }
 
+    // Guard to prevent double processing
+    private var isCurrentlyProcessing = false
+
     private fun processAttendance() {
+        if (isCurrentlyProcessing) {
+            Log.w("AttendanceVM", "processAttendance called while already processing — ignoring")
+            return
+        }
+
         val path = capturedSelfiePath ?: return
         val lat  = capturedLatitude   ?: return
         val lng  = capturedLongitude  ?: return
@@ -96,6 +104,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         capturedLatitude   = null
         capturedLongitude  = null
 
+        isCurrentlyProcessing = true
         _attendanceState.value = AttendanceState.PROCESSING
 
         viewModelScope.launch {
@@ -167,6 +176,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 _status.value = "⚠️ Network error — saved locally, tap Sync to retry"
                 Log.e("AttendanceVM", "Upload error: ${e.message}")
             } finally {
+                isCurrentlyProcessing = false
                 refreshAll()
             }
         }
@@ -203,8 +213,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    private var loadTodayJob: kotlinx.coroutines.Job? = null
+
     private fun refreshAll() {
-        viewModelScope.launch { loadTodayData() }
+        // Cancel any in-progress loadTodayData to avoid race conditions
+        loadTodayJob?.cancel()
+        loadTodayJob = viewModelScope.launch { loadTodayData() }
         viewModelScope.launch {
             val userId = sessionManager.getUserId() ?: return@launch
             _pendingCount.value = repository.getUnsyncedCount(userId)
@@ -223,7 +237,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 AttendanceState.CHECKED_IN else AttendanceState.READY_TO_CHECK_IN
 
             // Only restore the open session from API (needed after reinstall for correct button state)
-            // We do NOT bulk-insert all API records to avoid duplicates
+            // Skip if we're currently processing a check-in/out to avoid race conditions
+            if (isCurrentlyProcessing) return@launch
             try {
                 val activeResp = RetrofitClient.attendanceApi.getActiveSession()
                 val apiOpen    = activeResp.body()?.data
