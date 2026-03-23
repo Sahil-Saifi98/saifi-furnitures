@@ -222,61 +222,54 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             _attendanceState.value = if (localOpen != null)
                 AttendanceState.CHECKED_IN else AttendanceState.READY_TO_CHECK_IN
 
-            // Then fetch from backend to restore data after reinstall
+            // Only restore the open session from API (needed after reinstall for correct button state)
+            // We do NOT bulk-insert all API records to avoid duplicates
             try {
-                val apiResp = RetrofitClient.attendanceApi.getTodayAttendance()
-                if (apiResp.isSuccessful && apiResp.body()?.success == true) {
-                    val apiRecords = apiResp.body()!!.data
+                val activeResp = RetrofitClient.attendanceApi.getActiveSession()
+                val apiOpen    = activeResp.body()?.data
 
-                    if (apiRecords.isNotEmpty()) {
-                        // Save any missing records to local DB
-                        val userId     = sessionManager.getUserId()     ?: return@launch
-                        val employeeId = sessionManager.getEmployeeId() ?: return@launch
+                if (apiOpen != null && localOpen == null) {
+                    // There's an open check-in on server but not in local DB — restore it
+                    val userId     = sessionManager.getUserId()     ?: return@launch
+                    val employeeId = sessionManager.getEmployeeId() ?: return@launch
 
-                        apiRecords.forEach { apiRecord ->
-                            // Only save if not already in local DB (avoid duplicates)
-                            val existsLocally = localRecords.any { it.sessionId == apiRecord.sessionId && it.type == apiRecord.type }
-                            if (!existsLocally) {
-                                val ts = try {
-                                    java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.getDefault())
-                                        .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
-                                        .parse(apiRecord.timestamp)?.time ?: System.currentTimeMillis()
-                                } catch (_: Exception) { System.currentTimeMillis() }
+                    val alreadyExists = repository.getTodayAttendance()
+                        .any { it.sessionId == apiOpen.sessionId && it.type == "check_in" }
 
-                                repository.insert(
-                                    com.saififurnitures.app.data.local.AttendanceEntity(
-                                        userId     = userId,
-                                        employeeId = employeeId,
-                                        type       = apiRecord.type,
-                                        sessionId  = apiRecord.sessionId,
-                                        selfiePath = "",
-                                        selfieUrl  = apiRecord.selfieUrl ?: "",
-                                        latitude   = apiRecord.latitude,
-                                        longitude  = apiRecord.longitude,
-                                        address    = apiRecord.address,
-                                        timestamp  = ts,
-                                        isSynced   = true
-                                    )
-                                )
-                            }
-                        }
+                    if (!alreadyExists) {
+                        val ts = try {
+                            java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.getDefault())
+                                .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+                                .parse(apiOpen.timestamp)?.time ?: System.currentTimeMillis()
+                        } catch (_: Exception) { System.currentTimeMillis() }
 
-                        // Reload from local DB after restoring
+                        repository.insert(
+                            com.saififurnitures.app.data.local.AttendanceEntity(
+                                userId     = userId,
+                                employeeId = employeeId,
+                                type       = "check_in",
+                                sessionId  = apiOpen.sessionId,
+                                selfiePath = "",
+                                selfieUrl  = apiOpen.selfieUrl ?: "",
+                                latitude   = apiOpen.latitude,
+                                longitude  = apiOpen.longitude,
+                                address    = apiOpen.address,
+                                timestamp  = ts,
+                                isSynced   = true
+                            )
+                        )
+
                         val refreshed = repository.getTodayAttendance()
                         val openSess  = repository.getOpenSession()
-
-                        // Also check active session from API
-                        val activeResp = RetrofitClient.attendanceApi.getActiveSession()
-                        val apiOpen = activeResp.body()?.data
-
                         _todayRecords.value    = refreshed
                         _openSession.value     = openSess
-                        _attendanceState.value = if (openSess != null || apiOpen != null)
-                            AttendanceState.CHECKED_IN else AttendanceState.READY_TO_CHECK_IN
+                        _attendanceState.value = AttendanceState.CHECKED_IN
+                    } else {
+                        _attendanceState.value = AttendanceState.CHECKED_IN
                     }
                 }
             } catch (_: Exception) {
-                // Network unavailable — local data already shown, that's fine
+                // Network unavailable — local data already shown
             }
         }
     }
