@@ -61,4 +61,10 @@ interface AttendanceApi {
 
     @GET("attendance/active-session")
     suspend fun getActiveSession(): Response<AttendanceResponse>
+
+    @GET("attendance/history")
+    suspend fun getAttendanceHistory(
+        @Query("startDate") startDate: String? = null,
+        @Query("endDate")   endDate:   String? = null
+    ): Response<AttendanceListResponse>
 }

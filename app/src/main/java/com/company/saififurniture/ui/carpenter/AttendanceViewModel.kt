@@ -103,24 +103,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             val userId     = sessionManager.getUserId()     ?: ""
             val employeeId = sessionManager.getEmployeeId() ?: ""
             val type       = if (isCapturingCheckIn) "check_in" else "check_out"
-            // For check-out, we MUST use the existing check-in's sessionId
-            // Try local first, then fetch from backend if app was restarted
-            val sessionId  = if (isCapturingCheckIn) {
+            val sessionId  = if (isCapturingCheckIn)
                 repository.newSessionId()
-            } else {
-                val localSession = _openSession.value?.sessionId
-                if (localSession != null) {
-                    localSession
-                } else {
-                    // Fallback: fetch active session from backend
-                    try {
-                        val activeResp = RetrofitClient.attendanceApi.getActiveSession()
-                        activeResp.body()?.data?.sessionId ?: repository.newSessionId()
-                    } catch (e: Exception) {
-                        repository.newSessionId()
-                    }
-                }
-            }
+            else
+                _openSession.value?.sessionId ?: repository.newSessionId()
 
             // Save locally first — never lose attendance
             val entity = AttendanceEntity(
@@ -227,14 +213,71 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun loadTodayData() {
         viewModelScope.launch {
-            val records = repository.getTodayAttendance()
-            _todayRecords.value    = records
-            val open               = repository.getOpenSession()
-            _openSession.value     = open
-            _attendanceState.value = if (open != null)
-                AttendanceState.CHECKED_IN
-            else
-                AttendanceState.READY_TO_CHECK_IN
+            // Always try local DB first (instant)
+            val localRecords = repository.getTodayAttendance()
+            val localOpen    = repository.getOpenSession()
+
+            _todayRecords.value    = localRecords
+            _openSession.value     = localOpen
+            _attendanceState.value = if (localOpen != null)
+                AttendanceState.CHECKED_IN else AttendanceState.READY_TO_CHECK_IN
+
+            // Then fetch from backend to restore data after reinstall
+            try {
+                val apiResp = RetrofitClient.attendanceApi.getTodayAttendance()
+                if (apiResp.isSuccessful && apiResp.body()?.success == true) {
+                    val apiRecords = apiResp.body()!!.data
+
+                    if (apiRecords.isNotEmpty()) {
+                        // Save any missing records to local DB
+                        val userId     = sessionManager.getUserId()     ?: return@launch
+                        val employeeId = sessionManager.getEmployeeId() ?: return@launch
+
+                        apiRecords.forEach { apiRecord ->
+                            // Only save if not already in local DB (avoid duplicates)
+                            val existsLocally = localRecords.any { it.sessionId == apiRecord.sessionId && it.type == apiRecord.type }
+                            if (!existsLocally) {
+                                val ts = try {
+                                    java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.getDefault())
+                                        .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+                                        .parse(apiRecord.timestamp)?.time ?: System.currentTimeMillis()
+                                } catch (_: Exception) { System.currentTimeMillis() }
+
+                                repository.insert(
+                                    com.saififurnitures.app.data.local.AttendanceEntity(
+                                        userId     = userId,
+                                        employeeId = employeeId,
+                                        type       = apiRecord.type,
+                                        sessionId  = apiRecord.sessionId,
+                                        selfiePath = "",
+                                        selfieUrl  = apiRecord.selfieUrl ?: "",
+                                        latitude   = apiRecord.latitude,
+                                        longitude  = apiRecord.longitude,
+                                        address    = apiRecord.address,
+                                        timestamp  = ts,
+                                        isSynced   = true
+                                    )
+                                )
+                            }
+                        }
+
+                        // Reload from local DB after restoring
+                        val refreshed = repository.getTodayAttendance()
+                        val openSess  = repository.getOpenSession()
+
+                        // Also check active session from API
+                        val activeResp = RetrofitClient.attendanceApi.getActiveSession()
+                        val apiOpen = activeResp.body()?.data
+
+                        _todayRecords.value    = refreshed
+                        _openSession.value     = openSess
+                        _attendanceState.value = if (openSess != null || apiOpen != null)
+                            AttendanceState.CHECKED_IN else AttendanceState.READY_TO_CHECK_IN
+                    }
+                }
+            } catch (_: Exception) {
+                // Network unavailable — local data already shown, that's fine
+            }
         }
     }
 }

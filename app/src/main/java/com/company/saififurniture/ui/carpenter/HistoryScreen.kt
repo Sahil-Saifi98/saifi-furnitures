@@ -31,6 +31,7 @@ import androidx.navigation.NavHostController
 import com.saififurnitures.app.data.local.AppDatabase
 import com.saififurnitures.app.data.local.AttendanceEntity
 import com.saififurnitures.app.data.session.SessionManager
+import com.saififurnitures.app.data.remote.RetrofitClient
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import androidx.compose.foundation.clickable
@@ -49,12 +50,29 @@ import java.util.*
 
 // ── ViewModel ─────────────────────────────────────────────────────
 
+// History session data class (from API)
+data class HistorySession(
+    val sessionId: String,
+    val date: String,
+    val checkInTime: String?,
+    val checkOutTime: String?,
+    val checkInAddress: String,
+    val checkOutAddress: String?,
+    val checkInSelfieUrl: String?,
+    val checkOutSelfieUrl: String?,
+    val isSynced: Boolean
+)
+
 class HistoryViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val dao            = AppDatabase.getDatabase(application).attendanceDao()
     private val sessionManager = SessionManager(application)
+    private val dao            = AppDatabase.getDatabase(application).attendanceDao()
     private val dateFmt        = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
 
+    private val _sessions  = MutableStateFlow<List<HistorySession>>(emptyList())
+    val sessions: StateFlow<List<HistorySession>> = _sessions
+
+    // Keep records for backward compat with grouping logic
     private val _records   = MutableStateFlow<List<AttendanceEntity>>(emptyList())
     val records: StateFlow<List<AttendanceEntity>> = _records
 
@@ -76,12 +94,62 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                val userId = sessionManager.getUserId() ?: return@launch
-                _records.value = dao.getAttendanceByRange(userId, _startDate.value, _endDate.value)
+                // Use carpenter's own history endpoint — works with carpenter JWT token
+                val apiResponse = RetrofitClient.attendanceApi.getAttendanceHistory(
+                    startDate = _startDate.value,
+                    endDate   = _endDate.value
+                )
+
+                if (apiResponse.isSuccessful && apiResponse.body()?.success == true) {
+                    val raw = apiResponse.body()!!.data
+
+                    // Pair check-ins and check-outs by sessionId
+                    val paired = raw.groupBy { it.sessionId }
+                    val apiSessions = paired.values.mapNotNull { recs ->
+                        val ci = recs.find { it.type == "check_in" }
+                        val co = recs.find { it.type == "check_out" }
+                        val date = (ci ?: co)?.date ?: return@mapNotNull null
+                        val timeFmt = java.text.SimpleDateFormat("hh:mm a", java.util.Locale.getDefault())
+                            .apply { timeZone = java.util.TimeZone.getTimeZone("Asia/Kolkata") }
+                        HistorySession(
+                            sessionId        = ci?.sessionId ?: co?.sessionId ?: "",
+                            date             = date,
+                            checkInTime      = ci?.let { convertUtcToIst(it.timestamp) },
+                            checkOutTime     = co?.let { convertUtcToIst(it.timestamp) },
+                            checkInAddress   = ci?.address ?: "",
+                            checkOutAddress  = co?.address,
+                            checkInSelfieUrl = ci?.selfieUrl?.takeIf { it.isNotBlank() },
+                            checkOutSelfieUrl= co?.selfieUrl?.takeIf { it.isNotBlank() },
+                            isSynced         = ci?.isSynced ?: co?.isSynced ?: true
+                        )
+                    }.sortedByDescending { it.date + (it.checkInTime ?: "") }
+                    _sessions.value = apiSessions
+                } else {
+                    // Fallback to local DB
+                    val userId = sessionManager.getUserId() ?: return@launch
+                    _records.value = dao.getAttendanceByRange(userId, _startDate.value, _endDate.value)
+                }
+            } catch (e: Exception) {
+                // Fallback to local DB on network error
+                try {
+                    val userId = sessionManager.getUserId() ?: return@launch
+                    _records.value = dao.getAttendanceByRange(userId, _startDate.value, _endDate.value)
+                } catch (_: Exception) { }
             } finally {
                 _isLoading.value = false
             }
         }
+    }
+
+    private fun convertUtcToIst(utc: String): String {
+        return try {
+            val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.getDefault())
+                .apply { timeZone = TimeZone.getTimeZone("UTC") }
+            val date = fmt.parse(utc)
+            SimpleDateFormat("hh:mm a", Locale.getDefault())
+                .apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }
+                .format(date!!)
+        } catch (_: Exception) { utc }
     }
 }
 
@@ -92,17 +160,40 @@ fun HistoryScreen(
     navController: NavHostController,
     viewModel: HistoryViewModel = viewModel()
 ) {
-    val context    = LocalContext.current
-    val records    by viewModel.records.collectAsState()
-    val isLoading  by viewModel.isLoading.collectAsState()
-    val startDate  by viewModel.startDate.collectAsState()
-    val endDate    by viewModel.endDate.collectAsState()
-    val dateFmt    = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-
+    val context      = LocalContext.current
+    val apiSessions  by viewModel.sessions.collectAsState()
+    val localRecords by viewModel.records.collectAsState()
+    val isLoading    by viewModel.isLoading.collectAsState()
+    val startDate    by viewModel.startDate.collectAsState()
+    val endDate      by viewModel.endDate.collectAsState()
+    val dateFmt      = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
     var fullscreenSelfie by remember { mutableStateOf<String?>(null) }
 
-    // Group by sessionId → paired check-in/out
-    val grouped = records.groupBy { it.sessionId }
+    // Use API sessions if available, else build from local DB records
+    val allSessions: List<HistorySession> = if (apiSessions.isNotEmpty()) {
+        apiSessions
+    } else {
+        localRecords.groupBy { it.sessionId }.values.mapNotNull { recs ->
+            val ci = recs.find { it.type == "check_in" }
+            val co = recs.find { it.type == "check_out" }
+            val date = (ci ?: co)?.let {
+                SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(it.timestamp))
+            } ?: return@mapNotNull null
+            HistorySession(
+                sessionId        = ci?.sessionId ?: co?.sessionId ?: "",
+                date             = date,
+                checkInTime      = ci?.let { SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(it.timestamp)) },
+                checkOutTime     = co?.let { SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(it.timestamp)) },
+                checkInAddress   = ci?.address ?: "",
+                checkOutAddress  = co?.address,
+                checkInSelfieUrl = ci?.selfieUrl?.takeIf { it.isNotBlank() } ?: ci?.selfiePath?.takeIf { it.isNotBlank() },
+                checkOutSelfieUrl= co?.selfieUrl?.takeIf { it.isNotBlank() } ?: co?.selfiePath?.takeIf { it.isNotBlank() },
+                isSynced         = ci?.isSynced == true
+            )
+        }.sortedByDescending { it.date + (it.checkInTime ?: "") }
+    }
+
+    val grouped = allSessions.groupBy { it.date }
 
     Scaffold(
         containerColor = BgMain,
@@ -235,13 +326,13 @@ fun HistoryScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "${grouped.size} site visit(s) found",
+                        "${allSessions.size} site visit(s) found",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = TextMid
                     )
                     Text(
-                        "${records.count { it.type == "check_in" }} check-ins  •  ${records.count { it.type == "check_out" }} check-outs",
+                        "${allSessions.count { it.checkInTime != null }} check-ins  •  ${allSessions.count { it.checkOutTime != null }} check-outs",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextLight
                     )
@@ -273,21 +364,15 @@ fun HistoryScreen(
                     }
                 }
             } else {
-                // Group sessions by date for section headers
-                val byDate = grouped.entries.toList()
-                    .sortedByDescending { (_, recs) -> recs.minOfOrNull { it.timestamp } ?: 0L }
-                    .groupBy { (_, recs) ->
-                        val ts = recs.minOfOrNull { it.timestamp } ?: 0L
-                        SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(ts))
-                    }
+                val byDate = grouped.entries
+                    .sortedByDescending { (date, _) -> date }
 
                 LazyColumn(
                     contentPadding = PaddingValues(vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    byDate.forEach { (date, sessions) ->
+                    byDate.forEach { (date, dateSessions) ->
                         item {
-                            // Date section header
                             val displayDate = try {
                                 val d = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).parse(date)
                                 SimpleDateFormat("EEEE, d MMMM yyyy", Locale.getDefault()).format(d!!)
@@ -299,38 +384,24 @@ fun HistoryScreen(
                                     .padding(horizontal = 16.dp, vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .width(3.dp)
-                                        .height(16.dp)
-                                        .background(AccentGold, RoundedCornerShape(2.dp))
-                                )
+                                Box(modifier = Modifier.width(3.dp).height(16.dp)
+                                    .background(AccentGold, RoundedCornerShape(2.dp)))
                                 Spacer(Modifier.width(8.dp))
-                                Text(
-                                    displayDate,
-                                    style      = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.Bold,
-                                    color      = TextMid
-                                )
+                                Text(displayDate, style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold, color = TextMid)
                                 Spacer(Modifier.weight(1f))
                                 Surface(color = WoodCream, shape = RoundedCornerShape(20.dp)) {
-                                    Text(
-                                        "${sessions.size} visit(s)",
-                                        style    = MaterialTheme.typography.labelSmall,
-                                        color    = WoodMid,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                    )
+                                    Text("${dateSessions.size} visit(s)",
+                                        style = MaterialTheme.typography.labelSmall, color = WoodMid,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
                                 }
                             }
                         }
 
-                        itemsIndexed(sessions) { idx, (_, recs) ->
-                            val checkIn  = recs.find { it.type == "check_in" }
-                            val checkOut = recs.find { it.type == "check_out" }
-                            HistorySessionCard(
+                        itemsIndexed(dateSessions) { idx, session ->
+                            ApiHistorySessionCard(
                                 index         = idx + 1,
-                                checkIn       = checkIn,
-                                checkOut      = checkOut,
+                                session       = session,
                                 onSelfieClick = { url -> fullscreenSelfie = url }
                             )
                         }
@@ -379,6 +450,121 @@ fun HistoryScreen(
                 ) {
                     Icon(Icons.Default.Close, null, tint = Color.White,
                         modifier = Modifier.size(32.dp))
+                }
+            }
+        }
+    }
+}
+
+
+// ── API-based history session card ───────────────────────────────
+
+@Composable
+private fun ApiHistorySessionCard(
+    index: Int,
+    session: HistorySession,
+    onSelfieClick: (String) -> Unit
+) {
+    val isOpen  = session.checkOutTime == null
+    val synced  = session.isSynced
+
+    Card(
+        modifier  = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        shape     = RoundedCornerShape(14.dp),
+        colors    = CardDefaults.cardColors(containerColor = BgCard),
+        elevation = CardDefaults.cardElevation(2.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
+
+            // Top row
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier.size(40.dp)
+                        .background(if (isOpen) AccentGold.copy(0.15f) else WoodCream, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("S$index", style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isOpen) AccentGoldDark else WoodMid)
+                }
+                Spacer(Modifier.width(10.dp))
+                Text("Site Visit $index", style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold, color = TextDark,
+                    modifier = Modifier.weight(1f))
+                Surface(
+                    color = if (synced) AccentGreen.copy(0.12f) else Color(0xFFFFF3DC),
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Text(if (synced) "✓ Synced" else "Pending",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (synced) AccentGreen else AccentGoldDark,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            // Selfie thumbnails
+            if (session.checkInSelfieUrl != null || session.checkOutSelfieUrl != null) {
+                Row(modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("Check-in" to session.checkInSelfieUrl,
+                        "Check-out" to session.checkOutSelfieUrl).forEach { (lbl, src) ->
+                        Column(modifier = Modifier.weight(1f),
+                            horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(lbl, style = MaterialTheme.typography.labelSmall,
+                                color = if (lbl == "Check-in") AccentGreen else AccentRed)
+                            Spacer(Modifier.height(3.dp))
+                            Box(
+                                modifier = Modifier.fillMaxWidth().height(80.dp)
+                                    .clip(RoundedCornerShape(8.dp)).background(WoodCream)
+                                    .then(if (src != null) Modifier.clickable { onSelfieClick(src) } else Modifier),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (src != null) {
+                                    AsyncImage(
+                                        model = ImageRequest.Builder(LocalContext.current)
+                                            .data(src).crossfade(true).build(),
+                                        contentDescription = lbl,
+                                        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp)),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    Icon(Icons.Default.CameraAlt, null, tint = TextLight,
+                                        modifier = Modifier.size(22.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+
+            // Times
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier.size(7.dp).background(AccentGreen, CircleShape))
+                Spacer(Modifier.width(6.dp))
+                Text("In:  ${session.checkInTime ?: "—"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AccentGreen, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.weight(1f))
+                Box(modifier = Modifier.size(7.dp)
+                    .background(if (isOpen) TextLight else AccentRed, CircleShape))
+                Spacer(Modifier.width(6.dp))
+                Text("Out: ${session.checkOutTime ?: "Not recorded"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isOpen) TextLight else AccentRed)
+            }
+
+            // Address
+            val addr = session.checkInAddress.takeIf { it.isNotBlank() && !it.startsWith("Location:") }
+            if (addr != null) {
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.LocationOn, null, tint = TextLight,
+                        modifier = Modifier.size(11.dp))
+                    Spacer(Modifier.width(3.dp))
+                    Text(addr, style = MaterialTheme.typography.bodySmall, color = TextLight)
                 }
             }
         }

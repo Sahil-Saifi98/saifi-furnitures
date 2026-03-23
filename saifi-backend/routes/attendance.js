@@ -10,5 +10,6 @@ router.post('/checkin',       uploadSelfie.single('selfie'), attendanceControlle
 router.post('/checkout',      uploadSelfie.single('selfie'), attendanceController.checkOut);
 router.get('/today',          attendanceController.getTodayAttendance);
 router.get('/active-session', attendanceController.getActiveSession);
+router.get('/history',        attendanceController.getHistory);
 
 module.exports = router;

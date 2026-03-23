@@ -142,3 +142,21 @@ exports.getActiveSession = async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 };
+
+
+// GET /api/attendance/history?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+exports.getHistory = async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const query = { userId: req.user._id };
+    if (startDate && endDate) query.date = { $gte: startDate, $lte: endDate };
+
+    const records = await require('../models/Attendance')
+      .find(query)
+      .sort({ timestamp: 1 });
+
+    res.json({ success: true, count: records.length, data: records });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
