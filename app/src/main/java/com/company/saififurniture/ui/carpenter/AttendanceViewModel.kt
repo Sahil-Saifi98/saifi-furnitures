@@ -9,6 +9,7 @@ import com.saififurnitures.app.data.local.AttendanceEntity
 import com.saififurnitures.app.data.remote.RetrofitClient
 import com.saififurnitures.app.data.repository.AttendanceRepository
 import com.saififurnitures.app.data.session.SessionManager
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,47 +24,77 @@ enum class AttendanceState { READY_TO_CHECK_IN, CHECKED_IN, PROCESSING }
 
 class AttendanceViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository: AttendanceRepository
+    private val repository     = AttendanceRepository(
+        AppDatabase.getDatabase(application).attendanceDao(), application
+    )
     private val sessionManager = SessionManager(application)
 
     private val _attendanceState = MutableStateFlow(AttendanceState.READY_TO_CHECK_IN)
     val attendanceState: StateFlow<AttendanceState> = _attendanceState
 
-    private val _status = MutableStateFlow("Good day! Tap Check In when you arrive at a site.")
+    private val _status = MutableStateFlow("Good day! Tap Check In when you arrive.")
     val status: StateFlow<String> = _status
 
+    // Today's two records — at most one check-in and one check-out
+    private val _checkIn  = MutableStateFlow<AttendanceEntity?>(null)
+    val checkIn: StateFlow<AttendanceEntity?> = _checkIn
+
+    private val _checkOut = MutableStateFlow<AttendanceEntity?>(null)
+    val checkOut: StateFlow<AttendanceEntity?> = _checkOut
+
+    // Keep todayRecords for backward compat with AttendanceScreen list
     private val _todayRecords = MutableStateFlow<List<AttendanceEntity>>(emptyList())
     val todayRecords: StateFlow<List<AttendanceEntity>> = _todayRecords
-
-    private val _pendingCount = MutableStateFlow(0)
-    val pendingCount: StateFlow<Int> = _pendingCount
 
     private val _openSession = MutableStateFlow<AttendanceEntity?>(null)
     val openSession: StateFlow<AttendanceEntity?> = _openSession
 
+    private val _pendingCount = MutableStateFlow(0)
+    val pendingCount: StateFlow<Int> = _pendingCount
+
+    // Locked at button tap — safe from async interference
+    private var pendingIsCheckIn: Boolean = true
+    private var pendingSessionId: String  = ""
+
+    // Set after selfie captured
     private var capturedSelfiePath: String? = null
     private var capturedLatitude:   Double? = null
     private var capturedLongitude:  Double? = null
-    private var isCapturingCheckIn  = true
+
+    // Guards
+    private var isCurrentlyProcessing = false
+    private var loadTodayJob: Job? = null
 
     init {
-        val dao = AppDatabase.getDatabase(application).attendanceDao()
-        repository = AttendanceRepository(dao, application)
-        loadTodayData()
+        viewModelScope.launch { loadTodayData() }
         syncOnStartup()
     }
 
-    fun onCheckInSelfieCaptured(file: File) {
-        isCapturingCheckIn  = true
-        capturedSelfiePath  = file.absolutePath
-        _status.value       = "Selfie captured, fetching location…"
+    // ── Called at BUTTON TAP (before camera opens) ─────────────────
+
+    fun prepareCheckIn() {
+        pendingIsCheckIn = true
+        // Generate sessionId now — one fixed ID for today's check-in
+        pendingSessionId = repository.newSessionId()
+        Log.d("AttendanceVM", "prepareCheckIn sessionId=$pendingSessionId")
     }
 
-    fun onCheckOutSelfieCaptured(file: File) {
-        isCapturingCheckIn  = false
-        capturedSelfiePath  = file.absolutePath
-        _status.value       = "Selfie captured, fetching location…"
+    fun prepareCheckOut() {
+        pendingIsCheckIn = false
+        // Lock in the open session's ID right now
+        pendingSessionId = _openSession.value?.sessionId ?: ""
+        Log.d("AttendanceVM", "prepareCheckOut sessionId=$pendingSessionId openSession=${_openSession.value?.sessionId}")
     }
+
+    // ── Camera & location callbacks ────────────────────────────────
+
+    fun onSelfieCaptured(file: File) {
+        capturedSelfiePath = file.absolutePath
+        _status.value      = "Selfie captured, fetching location…"
+    }
+
+    fun onCheckInSelfieCaptured(file: File)  { onSelfieCaptured(file) }
+    fun onCheckOutSelfieCaptured(file: File) { onSelfieCaptured(file) }
 
     fun onLocationReceived(lat: Double, lng: Double) {
         capturedLatitude  = lat
@@ -72,38 +103,59 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun onLocationError(error: String) {
-        _status.value        = "Location error: $error"
-        _attendanceState.value = if (_openSession.value != null)
-            AttendanceState.CHECKED_IN
-        else
-            AttendanceState.READY_TO_CHECK_IN
+        _status.value = "Location error: $error"
+        restoreState()
+        clearPending()
     }
 
     fun onCameraError(error: String) {
-        _status.value          = "Camera error: $error"
-        _attendanceState.value = if (_openSession.value != null)
-            AttendanceState.CHECKED_IN
-        else
-            AttendanceState.READY_TO_CHECK_IN
+        _status.value = "Camera error: $error"
+        restoreState()
+        clearPending()
     }
 
-    // Guard to prevent double processing
-    private var isCurrentlyProcessing = false
+    private fun restoreState() {
+        _attendanceState.value = if (_openSession.value != null)
+            AttendanceState.CHECKED_IN else AttendanceState.READY_TO_CHECK_IN
+    }
+
+    private fun clearPending() {
+        capturedSelfiePath    = null
+        capturedLatitude      = null
+        capturedLongitude     = null
+        isCurrentlyProcessing = false
+    }
+
+    // ── Core processing ────────────────────────────────────────────
 
     private fun processAttendance() {
         if (isCurrentlyProcessing) {
-            Log.w("AttendanceVM", "processAttendance called while already processing — ignoring")
+            Log.w("AttendanceVM", "Already processing — ignoring")
             return
         }
 
-        val path = capturedSelfiePath ?: return
-        val lat  = capturedLatitude   ?: return
-        val lng  = capturedLongitude  ?: return
+        val path = capturedSelfiePath ?: run { Log.w("AttendanceVM", "No selfie path"); return }
+        val lat  = capturedLatitude   ?: run { Log.w("AttendanceVM", "No latitude");    return }
+        val lng  = capturedLongitude  ?: run { Log.w("AttendanceVM", "No longitude");   return }
 
-        capturedSelfiePath = null
-        capturedLatitude   = null
-        capturedLongitude  = null
+        val isCheckIn = pendingIsCheckIn
+        val sessionId = if (isCheckIn) {
+            pendingSessionId
+        } else {
+            // For checkout, if somehow pendingSessionId is empty, try openSession
+            pendingSessionId.ifBlank {
+                Log.w("AttendanceVM", "pendingSessionId blank for checkout — using openSession")
+                _openSession.value?.sessionId ?: repository.newSessionId()
+            }
+        }
 
+        val type = if (isCheckIn) "check_in" else "check_out"
+        Log.d("AttendanceVM", "processAttendance type=$type sessionId=$sessionId")
+
+        // Clear immediately to prevent reuse
+        capturedSelfiePath    = null
+        capturedLatitude      = null
+        capturedLongitude     = null
         isCurrentlyProcessing = true
         _attendanceState.value = AttendanceState.PROCESSING
 
@@ -111,13 +163,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             val timestamp  = System.currentTimeMillis()
             val userId     = sessionManager.getUserId()     ?: ""
             val employeeId = sessionManager.getEmployeeId() ?: ""
-            val type       = if (isCapturingCheckIn) "check_in" else "check_out"
-            val sessionId  = if (isCapturingCheckIn)
-                repository.newSessionId()
-            else
-                _openSession.value?.sessionId ?: repository.newSessionId()
 
-            // Save locally first — never lose attendance
             val entity = AttendanceEntity(
                 userId     = userId,
                 employeeId = employeeId,
@@ -131,28 +177,25 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 isSynced   = false
             )
             val localId = repository.insert(entity)
-            Log.d("AttendanceVM", "Saved locally id=$localId type=$type")
+            Log.d("AttendanceVM", "Saved locally id=$localId type=$type sessionId=$sessionId")
 
-            // Attempt upload
             try {
                 _status.value = "Uploading…"
                 val selfieFile = File(path)
                 if (!selfieFile.exists()) {
                     _status.value = "⚠️ Selfie missing — saved locally, tap Sync to retry"
-                    refreshAll()
                     return@launch
                 }
 
                 val selfiePart = MultipartBody.Part.createFormData(
-                    "selfie",
-                    "selfie_${timestamp}.jpg",
+                    "selfie", "selfie_${timestamp}.jpg",
                     selfieFile.asRequestBody("image/jpeg".toMediaType())
                 )
-                val latBody = lat.toString().toRequestBody("text/plain".toMediaType())
-                val lngBody = lng.toString().toRequestBody("text/plain".toMediaType())
-                val tsBody  = timestamp.toString().toRequestBody("text/plain".toMediaType())
+                val latBody     = lat.toString().toRequestBody("text/plain".toMediaType())
+                val lngBody     = lng.toString().toRequestBody("text/plain".toMediaType())
+                val tsBody      = timestamp.toString().toRequestBody("text/plain".toMediaType())
 
-                val response = if (type == "check_in") {
+                val response = if (isCheckIn) {
                     RetrofitClient.attendanceApi.checkIn(selfiePart, latBody, lngBody, tsBody)
                 } else {
                     val sessionBody = sessionId.toRequestBody("text/plain".toMediaType())
@@ -162,13 +205,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 if (response.isSuccessful && response.body()?.success == true) {
                     val addr = response.body()!!.data?.address ?: entity.address
                     val url  = response.body()!!.data?.selfieUrl ?: ""
-                    repository.update(
-                        entity.copy(id = localId, address = addr, selfieUrl = url, isSynced = true)
-                    )
-                    _status.value = if (type == "check_in")
-                        "✅ Checked in successfully!"
-                    else
-                        "✅ Checked out successfully!"
+                    repository.update(entity.copy(id = localId, address = addr, selfieUrl = url, isSynced = true))
+                    _status.value = if (isCheckIn) "✅ Checked in successfully!" else "✅ Checked out successfully!"
                 } else {
                     _status.value = "⚠️ Saved locally — tap Sync to retry (${response.code()})"
                 }
@@ -182,16 +220,18 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    // ── Sync ───────────────────────────────────────────────────────
+
     fun syncNow() {
         viewModelScope.launch {
             _status.value = "Syncing pending records…"
             try {
                 val result = repository.syncAllPending()
                 _status.value = when {
-                    result.total == 0          -> "✅ Everything is up to date"
+                    result.total == 0              -> "✅ Everything is up to date"
                     result.success == result.total -> "✅ Synced all ${result.success} record(s)"
-                    result.success > 0         -> "⚠️ Synced ${result.success}/${result.total} — ${result.failed} failed"
-                    else                       -> "⚠️ Sync failed — check connection"
+                    result.success > 0             -> "⚠️ Synced ${result.success}/${result.total} — ${result.failed} failed"
+                    else                           -> "⚠️ Sync failed — check connection"
                 }
             } catch (e: Exception) {
                 _status.value = "Sync error: ${e.message}"
@@ -206,17 +246,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             delay(700)
             val userId = sessionManager.getUserId() ?: return@launch
             if (repository.getUnsyncedCount(userId) == 0) return@launch
-            try {
-                repository.syncAllPending()
-                refreshAll()
-            } catch (_: Exception) { }
+            try { repository.syncAllPending(); refreshAll() } catch (_: Exception) { }
         }
     }
 
-    private var loadTodayJob: kotlinx.coroutines.Job? = null
+    // ── Refresh & Load ─────────────────────────────────────────────
 
     private fun refreshAll() {
-        // Cancel any in-progress loadTodayData to avoid race conditions
         loadTodayJob?.cancel()
         loadTodayJob = viewModelScope.launch { loadTodayData() }
         viewModelScope.launch {
@@ -225,67 +261,57 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    private fun loadTodayData() {
-        viewModelScope.launch {
-            // Always try local DB first (instant)
-            val localRecords = repository.getTodayAttendance()
-            val localOpen    = repository.getOpenSession()
+    private suspend fun loadTodayData() {
+        if (isCurrentlyProcessing) return
 
-            _todayRecords.value    = localRecords
-            _openSession.value     = localOpen
-            _attendanceState.value = if (localOpen != null)
-                AttendanceState.CHECKED_IN else AttendanceState.READY_TO_CHECK_IN
+        val records  = repository.getTodayAttendance()
+        val checkIn  = records.firstOrNull { it.type == "check_in" }
+        val checkOut = records.firstOrNull { it.type == "check_out" }
+        val open     = if (checkIn != null && checkOut == null) checkIn else null
 
-            // Only restore the open session from API (needed after reinstall for correct button state)
-            // Skip if we're currently processing a check-in/out to avoid race conditions
-            if (isCurrentlyProcessing) return@launch
+        _todayRecords.value    = records
+        _checkIn.value         = checkIn
+        _checkOut.value        = checkOut
+        _openSession.value     = open
+        _attendanceState.value = if (open != null) AttendanceState.CHECKED_IN
+        else AttendanceState.READY_TO_CHECK_IN
+
+        // If no local check-in, check API for open session (handles reinstall)
+        if (checkIn == null) {
             try {
                 val activeResp = RetrofitClient.attendanceApi.getActiveSession()
-                val apiOpen    = activeResp.body()?.data
+                val apiOpen    = activeResp.body()?.data ?: return
 
-                if (apiOpen != null && localOpen == null) {
-                    // There's an open check-in on server but not in local DB — restore it
-                    val userId     = sessionManager.getUserId()     ?: return@launch
-                    val employeeId = sessionManager.getEmployeeId() ?: return@launch
-
-                    val alreadyExists = repository.getTodayAttendance()
-                        .any { it.sessionId == apiOpen.sessionId && it.type == "check_in" }
-
-                    if (!alreadyExists) {
-                        val ts = try {
-                            java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.getDefault())
-                                .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
-                                .parse(apiOpen.timestamp)?.time ?: System.currentTimeMillis()
-                        } catch (_: Exception) { System.currentTimeMillis() }
-
-                        repository.insert(
-                            com.saififurnitures.app.data.local.AttendanceEntity(
-                                userId     = userId,
-                                employeeId = employeeId,
-                                type       = "check_in",
-                                sessionId  = apiOpen.sessionId,
-                                selfiePath = "",
-                                selfieUrl  = apiOpen.selfieUrl ?: "",
-                                latitude   = apiOpen.latitude,
-                                longitude  = apiOpen.longitude,
-                                address    = apiOpen.address,
-                                timestamp  = ts,
-                                isSynced   = true
-                            )
-                        )
-
-                        val refreshed = repository.getTodayAttendance()
-                        val openSess  = repository.getOpenSession()
-                        _todayRecords.value    = refreshed
-                        _openSession.value     = openSess
-                        _attendanceState.value = AttendanceState.CHECKED_IN
-                    } else {
-                        _attendanceState.value = AttendanceState.CHECKED_IN
-                    }
+                val alreadyExists = repository.getTodayAttendance()
+                    .any { it.sessionId == apiOpen.sessionId && it.type == "check_in" }
+                if (alreadyExists) {
+                    _attendanceState.value = AttendanceState.CHECKED_IN
+                    return
                 }
-            } catch (_: Exception) {
-                // Network unavailable — local data already shown
-            }
+
+                val userId     = sessionManager.getUserId()     ?: return
+                val employeeId = sessionManager.getEmployeeId() ?: return
+                val ts = try {
+                    java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.getDefault())
+                        .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+                        .parse(apiOpen.timestamp)?.time ?: System.currentTimeMillis()
+                } catch (_: Exception) { System.currentTimeMillis() }
+
+                repository.insert(AttendanceEntity(
+                    userId = userId, employeeId = employeeId, type = "check_in",
+                    sessionId = apiOpen.sessionId, selfiePath = "",
+                    selfieUrl = apiOpen.selfieUrl ?: "", latitude = apiOpen.latitude,
+                    longitude = apiOpen.longitude, address = apiOpen.address,
+                    timestamp = ts, isSynced = true
+                ))
+                // Reload after insert
+                val refreshed = repository.getTodayAttendance()
+                val restoredCheckIn = refreshed.firstOrNull { it.type == "check_in" }
+                _todayRecords.value = refreshed
+                _checkIn.value      = restoredCheckIn
+                _openSession.value  = restoredCheckIn
+                _attendanceState.value = AttendanceState.CHECKED_IN
+            } catch (_: Exception) { }
         }
     }
 }

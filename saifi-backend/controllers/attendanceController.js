@@ -47,10 +47,16 @@ exports.checkIn = async (req, res) => {
     // Use provided sessionId from app, or generate one
     const sid  = sessionId || require('crypto').randomUUID();
 
-    // Idempotency check — if same sessionId + type already exists, return it (don't duplicate)
+    // Idempotency: same sessionId already exists — return it
     const existing = await Attendance.findOne({ sessionId: sid, type: 'check_in', userId: req.user._id });
     if (existing) {
       return res.status(200).json({ success: true, message: 'Already checked in', data: existing });
+    }
+
+    // One check-in per day only
+    const todayCheckIn = await Attendance.findOne({ userId: req.user._id, date, type: 'check_in' });
+    if (todayCheckIn) {
+      return res.status(200).json({ success: true, message: 'Already checked in today', data: todayCheckIn });
     }
 
     const record = await Attendance.create({
@@ -94,10 +100,16 @@ exports.checkOut = async (req, res) => {
     const date = moment(ts).tz(IST).format('YYYY-MM-DD');
     const time = moment(ts).tz(IST).format('HH:mm:ss');
 
-    // Idempotency check — if same sessionId + type already exists, return it (don't duplicate)
+    // Idempotency: same sessionId already exists — return it
     const existingOut = await Attendance.findOne({ sessionId, type: 'check_out', userId: req.user._id });
     if (existingOut) {
       return res.status(200).json({ success: true, message: 'Already checked out', data: existingOut });
+    }
+
+    // One check-out per day only
+    const todayCheckOut = await Attendance.findOne({ userId: req.user._id, date, type: 'check_out' });
+    if (todayCheckOut) {
+      return res.status(200).json({ success: true, message: 'Already checked out today', data: todayCheckOut });
     }
 
     const record = await Attendance.create({
