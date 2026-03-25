@@ -45,8 +45,6 @@ fun AttendanceScreen(
     val attendanceState by viewModel.attendanceState.collectAsState()
     val status          by viewModel.status.collectAsState()
     val todayRecords    by viewModel.todayRecords.collectAsState()
-    val checkIn         by viewModel.checkIn.collectAsState()
-    val checkOut        by viewModel.checkOut.collectAsState()
     val pendingCount    by viewModel.pendingCount.collectAsState()
     val openSession     by viewModel.openSession.collectAsState()
 
@@ -335,7 +333,7 @@ fun AttendanceScreen(
                         shape = RoundedCornerShape(20.dp)
                     ) {
                         Text(
-                            if (todayRecords.isEmpty()) "No entries" else if (checkOut != null) "Completed" else "On Site",
+                            "${todayRecords.size} entries",
                             style    = MaterialTheme.typography.labelSmall,
                             color    = WoodMid,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
@@ -379,9 +377,12 @@ fun AttendanceScreen(
                     }
                 }
             } else {
-                item {
-                    // Single check-in/out card for today
+                val grouped = todayRecords.groupBy { it.sessionId }
+                itemsIndexed(grouped.entries.toList()) { index, (_, records) ->
+                    val checkIn  = records.find { it.type == "check_in" }
+                    val checkOut = records.find { it.type == "check_out" }
                     SessionHistoryCard(
+                        index    = index + 1,
                         checkIn  = checkIn,
                         checkOut = checkOut
                     )
@@ -403,9 +404,10 @@ private fun StatusCard(
     onCheckOut: () -> Unit
 ) {
     val isCheckedIn  = attendanceState == AttendanceState.CHECKED_IN
-    val isProcessing = attendanceState == AttendanceState.PROCESSING
-    val isDone       = todayRecords.any { it.type == "check_out" }
-    val checkInTime  = openSession?.let {
+    val isCompleted  = attendanceState == AttendanceState.COMPLETED
+    val isDone       = isCompleted || todayRecords.any { it.type == "check_out" }
+    val isProcessing      = attendanceState == AttendanceState.PROCESSING
+    val checkInTime = openSession?.let {
         SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(it.timestamp))
     }
 
@@ -427,7 +429,7 @@ private fun StatusCard(
                 modifier = Modifier
                     .size(110.dp)
                     .background(
-                        if (isCheckedIn) AccentGreen.copy(alpha = 0.12f) else WoodCream,
+                        if (isCheckedIn || isCompleted) AccentGreen.copy(alpha = 0.12f) else WoodCream,
                         CircleShape
                     ),
                 contentAlignment = Alignment.Center
@@ -436,7 +438,7 @@ private fun StatusCard(
                     modifier = Modifier
                         .size(88.dp)
                         .background(
-                            if (isCheckedIn) AccentGreen.copy(alpha = 0.2f) else WoodWarm,
+                            if (isCheckedIn || isCompleted) AccentGreen.copy(alpha = 0.2f) else WoodWarm,
                             CircleShape
                         ),
                     contentAlignment = Alignment.Center
@@ -451,7 +453,7 @@ private fun StatusCard(
                         Icon(
                             imageVector        = if (isCheckedIn) Icons.Default.Handyman else Icons.Default.Carpenter,
                             contentDescription = null,
-                            tint               = if (isCheckedIn) AccentGreen else WoodMid,
+                            tint               = if (isCheckedIn || isCompleted) AccentGreen else WoodMid,
                             modifier           = Modifier.size(48.dp)
                         )
                     }
@@ -464,19 +466,20 @@ private fun StatusCard(
                 text = when (attendanceState) {
                     AttendanceState.READY_TO_CHECK_IN -> "Ready for Work"
                     AttendanceState.CHECKED_IN        -> "Currently On Site"
+                    AttendanceState.COMPLETED         -> "Work Done for Today"
                     AttendanceState.PROCESSING        -> "Processing…"
                 },
                 style      = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
-                color      = if (isCheckedIn) AccentGreen else TextDark
+                color      = if (isCheckedIn || isCompleted) AccentGreen else TextDark
             )
 
             Spacer(Modifier.height(4.dp))
 
             Text(
                 text = when {
+                    isCompleted                        -> "Great job! See you tomorrow"
                     isCheckedIn && checkInTime != null -> "Checked in at $checkInTime"
-                    isDone                             -> "Work completed for today"
                     else                               -> "Tap below to check in"
                 },
                 style     = MaterialTheme.typography.bodyMedium,
@@ -486,15 +489,13 @@ private fun StatusCard(
 
             Spacer(Modifier.height(24.dp))
 
-            val timeFmt = SimpleDateFormat("hh:mm a", Locale.getDefault())
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
                 MiniStat(
-                    label = "Check-In",
-                    value = todayRecords.firstOrNull { it.type == "check_in" }
-                        ?.let { timeFmt.format(Date(it.timestamp)) } ?: "--",
+                    label = "Check-ins",
+                    value = todayRecords.count { it.type == "check_in" }.toString(),
                     color = AccentGreen
                 )
                 Box(
@@ -504,9 +505,8 @@ private fun StatusCard(
                         .background(DividerWood)
                 )
                 MiniStat(
-                    label = "Check-Out",
-                    value = todayRecords.firstOrNull { it.type == "check_out" }
-                        ?.let { timeFmt.format(Date(it.timestamp)) } ?: "--",
+                    label = "Check-outs",
+                    value = todayRecords.count { it.type == "check_out" }.toString(),
                     color = AccentRed
                 )
                 Box(
@@ -516,24 +516,16 @@ private fun StatusCard(
                         .background(DividerWood)
                 )
                 MiniStat(
-                    label = "Status",
-                    value = when {
-                        isDone        -> "Done"
-                        isCheckedIn   -> "On Site"
-                        else          -> "Absent"
-                    },
-                    color = when {
-                        isDone      -> AccentGold
-                        isCheckedIn -> AccentGreen
-                        else        -> TextLight
-                    }
+                    label = "Sites Done",
+                    value = sessionsCompleted.toString(),
+                    color = AccentGold
                 )
             }
 
             Spacer(Modifier.height(24.dp))
 
-            if (!isProcessing) {
-                if (!isCheckedIn && !isDone) {
+            if (!isProcessing && !isCompleted) {
+                if (!isCheckedIn) {
                     Button(
                         onClick  = onCheckIn,
                         modifier = Modifier
@@ -569,7 +561,7 @@ private fun StatusCard(
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "Check out when you are done for the day",
+                        "Check out before moving to your next site",
                         style     = MaterialTheme.typography.bodySmall,
                         color     = TextLight,
                         textAlign = TextAlign.Center
@@ -584,13 +576,14 @@ private fun StatusCard(
 
 @Composable
 private fun SessionHistoryCard(
+    index: Int,
     checkIn: AttendanceEntity?,
     checkOut: AttendanceEntity?
 ) {
     val timeFmt      = SimpleDateFormat("hh:mm a", Locale.getDefault())
     val checkInTime  = checkIn?.let  { timeFmt.format(Date(it.timestamp)) } ?: "--"
     val checkOutTime = checkOut?.let { timeFmt.format(Date(it.timestamp)) } ?: "In Progress"
-    val isOpen       = checkIn != null && checkOut == null
+    val isOpen       = checkOut == null
 
     Card(
         modifier  = Modifier
@@ -615,11 +608,11 @@ private fun SessionHistoryCard(
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    if (isOpen) Icons.Default.Handyman else Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    tint     = if (isOpen) AccentGoldDark else WoodMid,
-                    modifier = Modifier.size(22.dp)
+                Text(
+                    "S$index",
+                    style      = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color      = if (isOpen) AccentGoldDark else WoodMid
                 )
             }
 
@@ -627,7 +620,7 @@ private fun SessionHistoryCard(
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    "Today's Attendance",
+                    "Site Visit $index",
                     style      = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     color      = TextDark
