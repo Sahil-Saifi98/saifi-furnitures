@@ -516,9 +516,9 @@ private fun StatusCard(
                         .background(DividerWood)
                 )
                 MiniStat(
-                    label = "Sites Done",
-                    value = sessionsCompleted.toString(),
-                    color = AccentGold
+                    label = "Status",
+                    value = if (isDone) "Done" else if (isCheckedIn) "On Site" else "-",
+                    color = if (isDone) AccentGold else if (isCheckedIn) AccentGreen else TextLight
                 )
             }
 
