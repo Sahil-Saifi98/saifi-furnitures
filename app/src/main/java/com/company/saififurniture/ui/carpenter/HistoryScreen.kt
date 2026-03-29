@@ -103,14 +103,14 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                 if (apiResponse.isSuccessful && apiResponse.body()?.success == true) {
                     val raw = apiResponse.body()!!.data
 
-                    // Pair check-ins and check-outs by sessionId
-                    val paired = raw.groupBy { it.sessionId }
-                    val apiSessions = paired.values.mapNotNull { recs ->
-                        val ci = recs.find { it.type == "check_in" }
-                        val co = recs.find { it.type == "check_out" }
-                        val date = (ci ?: co)?.date ?: return@mapNotNull null
-                        val timeFmt = java.text.SimpleDateFormat("hh:mm a", java.util.Locale.getDefault())
-                            .apply { timeZone = java.util.TimeZone.getTimeZone("Asia/Kolkata") }
+                    // Group by DATE — one check-in and one check-out per day
+                    val byDate = raw.groupBy { it.date }
+                    val apiSessions = byDate.entries.mapNotNull { (date, recs) ->
+                        val ci = recs.filter { it.type == "check_in" }
+                            .minByOrNull { it.timestamp }  // earliest check-in
+                        val co = recs.filter { it.type == "check_out" }
+                            .maxByOrNull { it.timestamp }  // latest check-out
+                        if (ci == null && co == null) return@mapNotNull null
                         HistorySession(
                             sessionId        = ci?.sessionId ?: co?.sessionId ?: "",
                             date             = date,
@@ -120,9 +120,9 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
                             checkOutAddress  = co?.address,
                             checkInSelfieUrl = ci?.selfieUrl?.takeIf { it.isNotBlank() },
                             checkOutSelfieUrl= co?.selfieUrl?.takeIf { it.isNotBlank() },
-                            isSynced         = ci?.isSynced ?: co?.isSynced ?: true
+                            isSynced         = (ci?.isSynced != false) && (co?.isSynced != false)
                         )
-                    }.sortedByDescending { it.date + (it.checkInTime ?: "") }
+                    }.sortedByDescending { it.date }
                     _sessions.value = apiSessions
                 } else {
                     // Fallback to local DB
@@ -173,12 +173,12 @@ fun HistoryScreen(
     val allSessions: List<HistorySession> = if (apiSessions.isNotEmpty()) {
         apiSessions
     } else {
-        localRecords.groupBy { it.sessionId }.values.mapNotNull { recs ->
-            val ci = recs.find { it.type == "check_in" }
-            val co = recs.find { it.type == "check_out" }
-            val date = (ci ?: co)?.let {
-                SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(it.timestamp))
-            } ?: return@mapNotNull null
+        localRecords.groupBy { rec ->
+            SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(rec.timestamp))
+        }.entries.mapNotNull { (date, recs) ->
+            val ci = recs.filter { it.type == "check_in" }.minByOrNull { it.timestamp }
+            val co = recs.filter { it.type == "check_out" }.maxByOrNull { it.timestamp }
+            if (ci == null && co == null) return@mapNotNull null
             HistorySession(
                 sessionId        = ci?.sessionId ?: co?.sessionId ?: "",
                 date             = date,
@@ -188,11 +188,12 @@ fun HistoryScreen(
                 checkOutAddress  = co?.address,
                 checkInSelfieUrl = ci?.selfieUrl?.takeIf { it.isNotBlank() } ?: ci?.selfiePath?.takeIf { it.isNotBlank() },
                 checkOutSelfieUrl= co?.selfieUrl?.takeIf { it.isNotBlank() } ?: co?.selfiePath?.takeIf { it.isNotBlank() },
-                isSynced         = ci?.isSynced == true
+                isSynced         = ci?.isSynced != false && co?.isSynced != false
             )
-        }.sortedByDescending { it.date + (it.checkInTime ?: "") }
+        }.sortedByDescending { it.date }
     }
 
+    // allSessions already has one entry per date — no further grouping needed
     val grouped = allSessions.groupBy { it.date }
 
     Scaffold(
@@ -332,7 +333,7 @@ fun HistoryScreen(
                         color = TextMid
                     )
                     Text(
-                        "${allSessions.count { it.checkInTime != null }} check-ins  •  ${allSessions.count { it.checkOutTime != null }} check-outs",
+                        "${allSessions.size} day(s)  •  ${allSessions.count { it.checkOutTime != null }} completed",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextLight
                     )
@@ -391,17 +392,18 @@ fun HistoryScreen(
                                     fontWeight = FontWeight.Bold, color = TextMid)
                                 Spacer(Modifier.weight(1f))
                                 Surface(color = WoodCream, shape = RoundedCornerShape(20.dp)) {
-                                    Text("${dateSessions.size} visit(s)",
+                                    Text(
+                                        if (dateSessions.first().checkOutTime != null) "Completed" else "On Site",
                                         style = MaterialTheme.typography.labelSmall, color = WoodMid,
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
                                 }
                             }
                         }
 
-                        itemsIndexed(dateSessions) { idx, session ->
+                        item {
                             ApiHistorySessionCard(
-                                index         = idx + 1,
-                                session       = session,
+                                index         = 1,
+                                session       = dateSessions.first(),
                                 onSelfieClick = { url -> fullscreenSelfie = url }
                             )
                         }
